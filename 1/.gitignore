@@ -1,0 +1,12 @@
+# Локальные результаты сборки и IDE
+build/
+build-*/
+.vs/
+.DS_Store
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.dSYM/
+submission.zip

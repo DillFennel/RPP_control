@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.16)
+project(SocketPractice LANGUAGES CXX)
+
+if(NOT WIN32)
+    message(FATAL_ERROR "This template uses Windows Winsock. Build it on Windows.")
+endif()
+
+add_executable(server server/main.cpp)
+add_executable(client client/main.cpp)
+
+foreach(target server client)
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
+    target_link_libraries(${target} PRIVATE ws2_32)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /utf-8)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endforeach()

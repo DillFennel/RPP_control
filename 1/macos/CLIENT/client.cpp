@@ -3,38 +3,39 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <csignal>
+
 #include <cerrno>
 #include <iostream>
 #include <sstream>
+
 #include <string>
 #include <vector>
 
-// TCP передаёт поток байтов. Разделяем сообщения символом '\n'.
+// TCP передает поток байтов, разделяем сообщения символом '\n'
 enum ReadResult { LINE_OK, CLOSED, IO_ERROR, TOO_LONG, INCOMPLETE };
 const std::size_t MAX_LINE = 1024;
 
-// Читаем по одному байту: так не заберём начало следующей команды.
+// Читаем по одному байту, чтобы случайно не забрать начало следующей команды
 ReadResult receiveLine(int sock, std::string& line) {
     line.clear();
     for (;;) {
         char c;
         const ssize_t n = recv(sock, &c, 1, 0);
         if (n == 0) return line.empty() ? CLOSED : INCOMPLETE;
-        if (n < 0) {
+        if (n < 0) { // Чтение поломалось
             if (errno == EINTR) continue;
             return IO_ERROR;
         }
-        if (c == '\n') {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (c == '\n') { // Значит это конец команды
+            if (!line.empty() && line.back() == '\r') { line.pop_back(); }
             return LINE_OK; // Принимаем и LF, и CRLF.
         }
         line += c;
-        if (line.size() > MAX_LINE &&
-            !(line.size() == MAX_LINE + 1 && c == '\r')) return TOO_LONG;
+        if (line.size() > MAX_LINE && !(line.size() == MAX_LINE + 1 && c == '\r')) return TOO_LONG;
     }
 }
 
-// send может отправить часть строки: повторяем для оставшихся байтов.
+// send может отправить часть строки, так как TCP можеть разделять на пакеты поменьше. Тогда нужно повторить для оставшихся байтов
 bool sendLine(int sock, const std::string& line) {
     const std::string data = line + '\n';
     std::size_t sent = 0;
@@ -48,7 +49,7 @@ bool sendLine(int sock, const std::string& line) {
     return true;
 }
 
-// Разрешены только десятичные цифры; переполнение обнаружит поток ввода.
+// Разрешены только десятичные цифры. Переполнение обнаружит поток ввода
 bool parseUnsigned(const std::string& text, unsigned long long& number) {
     if (text.empty()) return false;
     for (char c : text) {
@@ -58,7 +59,7 @@ bool parseUnsigned(const std::string& text, unsigned long long& number) {
     return static_cast<bool>(input >> number);
 }
 
-// Строки результата не содержат пробелов, поэтому читаются одним токеном.
+// Строки результата не содержат пробелов, поэтому читаются одним токеном
 bool validValue(const std::string& value) {
     if (value.empty() || value.size() > 128) return false;
     for (unsigned char c : value) {
@@ -67,7 +68,7 @@ bool validValue(const std::string& value) {
     return true;
 }
 
-// Разбираем ответ сервера и показываем человеку результат.
+// Разбираем ответ сервера и показываем результат
 bool printResponse(const std::string& response) {
     for (unsigned char c : response) {
         if (c != '\t' && (c < 32 || c > 126)) return false;
@@ -125,34 +126,39 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     std::signal(SIGPIPE, SIG_IGN);
-    // 1. Создаём сокет клиента.
+
+    // Создаем сокет клиента
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         std::cerr << "socket failed\n";
         return 1;
     }
 
-    // 2. Указываем УДАЛЁННЫЙ адрес сервера.
+    // Указываем адрес сервера
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(12345);
     const char* ip = argc == 2 ? argv[1] : "127.0.0.1";
+    // Преобразовываем строку в сетевой адрес
     if (inet_pton(AF_INET, ip, &address.sin_addr) != 1) {
         std::cerr << "Invalid IPv4 address\n";
         close(sock);
         return 1;
     }
-    // Свой локальный порт клиент получает автоматически при connect.
+    // Свой локальный порт клиент получает автоматически при connect, bind делать не нужно
+    // Соединяемся с сервером, тут происходит трехступенчатое рукопожатие и устанавливается соединение
     if (connect(sock, (const sockaddr*)&address, sizeof(address)) < 0) {
         std::cerr << "connect failed: start the server first\n";
         close(sock);
         return 1;
     }
+    std::cout << "Server connected: " << inet_ntoa(address.sin_addr) << ':' << ntohs(address.sin_port) << "\n";
+    // Показываем, какие команды можно использовать
     std::cout << "/generate <type> <length> | /seed <number> | /check <type> <text> | /history | /quit\nTypes: DIGITS LETTERS ALNUM PUNCT; length: 1..128\n";
     int exitCode = 0;
 
-    // 3. Читаем команду с клавиатуры, отправляем и разбираем ответ.
-    for (;;) {
+    // Читаем команду с клавиатуры, отправляем и разбираем ответ.
+    while (true) {
         std::cout << "> " << std::flush;
         std::string command;
         bool endOfInput = !std::getline(std::cin, command);
@@ -161,7 +167,7 @@ int main(int argc, char* argv[]) {
             exitCode = 1;
             break;
         }
-        if (endOfInput) command = "/quit"; // Ctrl+D в пустой строке.
+        if (endOfInput) command = "/quit"; // Ctrl+D в пустой строке
         if (command.size() > MAX_LINE) {
             std::cerr << "Maximum 1024 bytes per command\n";
             continue;
@@ -194,8 +200,8 @@ int main(int argc, char* argv[]) {
             break;
         }
     }
-    // 4. Освобождаем ресурсы явно, как в презентации.
-    shutdown(sock, SHUT_WR);
+    // Освобождаем ресурсы
+    shutdown(sock, SHUT_WR); // Сначала shutdown, чтобы прекратить принимать новые сообщения, но дообработать уже начатые
     close(sock);
     return exitCode;
 }

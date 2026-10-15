@@ -12,11 +12,11 @@
 #include <random>
 #include <vector>
 
-// TCP передаёт поток байтов. Разделяем сообщения символом '\n'.
+// TCP передаёт поток байтов, разделяем сообщения символом '\n'.
 enum ReadResult { LINE_OK, CLOSED, IO_ERROR, TOO_LONG, INCOMPLETE };
 const std::size_t MAX_LINE = 1024;
 
-// Читаем по одному байту: так не заберём начало следующей команды.
+// Читаем по одному байту: так не заберём начало следующей команды
 ReadResult receiveLine(int sock, std::string& line) {
     line.clear();
     for (;;) {
@@ -37,7 +37,7 @@ ReadResult receiveLine(int sock, std::string& line) {
     }
 }
 
-// send может отправить часть строки: повторяем для оставшихся байтов.
+// send может отправить часть строки: повторяем для оставшихся байтов
 bool sendLine(int sock, const std::string& line) {
     const std::string data = line + '\n';
     std::size_t sent = 0;
@@ -51,7 +51,7 @@ bool sendLine(int sock, const std::string& line) {
     return true;
 }
 
-// Разрешены только десятичные цифры; переполнение обнаружит поток ввода.
+// Разрешены только десятичные цифры; переполнение обнаружит поток ввода
 bool parseUnsigned(const std::string& text, unsigned long long& number) {
     if (text.empty()) return false;
     for (char c : text) {
@@ -70,7 +70,7 @@ std::string alphabetForType(const std::string& type) {
     return ""; // Неизвестный тип.
 }
 
-// Генератор и история принадлежат одному соединению и передаются по ссылке.
+// Генератор и история принадлежат одному соединению и передаются по ссылке
 std::string handleCommand(const std::string& line, std::mt19937& generator,
                          std::vector<std::string>& history, bool& quit) {
     for (unsigned char c : line) {
@@ -159,6 +159,7 @@ int main() {
         close(serverSocket);
         return 1;
     }
+    // Начинаем слушать запросы на подключение клиентов
     if (listen(serverSocket, 3) < 0) {
         std::cerr << "listen failed\n";
         close(serverSocket);
@@ -166,43 +167,46 @@ int main() {
     }
     std::cout << "Server on port 12345. Ctrl+C to stop.\n";
 
-    // 3. По очереди принимаем клиентов.
+    // По очереди принимаем клиентов
     while (true) {
-        int clientSocket = accept(serverSocket, nullptr, nullptr);
+        sockaddr_in clientAddress{};
+        socklen_t addressLength = sizeof(clientAddress);
+        int clientSocket = accept(serverSocket, (sockaddr*)&clientAddress, &addressLength);
         if (clientSocket < 0) {
             if (errno == EINTR) continue;
             std::cerr << "accept failed\n";
             break;
         }
-        std::cout << "Client connected\n";
-        std::mt19937 generator(5489u); // Генератор этой сессии.
-        std::vector<std::string> history; // Не больше пяти результатов.
+
+        std::cout << "Client connected: " << inet_ntoa(clientAddress.sin_addr) << ':' << ntohs(clientAddress.sin_port) << '\n';
+
+        std::mt19937 generator(5489u);
+        std::vector<std::string> history;
         bool quit = false;
         while (!quit) {
             std::string request;
             ReadResult result = receiveLine(clientSocket, request);
-            if (result == CLOSED) break;
-            if (result == IO_ERROR) {
+            if (result == CLOSED) break; // Соединение уже закрыто, некуда писать
+            if (result == IO_ERROR) { // Ошибка с чтением
                 std::cerr << "recv failed\n";
                 break;
             }
-            if (result == TOO_LONG || result == INCOMPLETE) {
-                sendLine(clientSocket, result == TOO_LONG
-                    ? "ERR LINE_TOO_LONG Maximum_1024_bytes"
-                    : "ERR INCOMPLETE_MESSAGE Expected_newline");
-                break; // Ошибка framing завершает эту сессию.
+            if (result == TOO_LONG || result == INCOMPLETE) { // С запросом что-то не так
+                sendLine(clientSocket, result == TOO_LONG ? "ERR LINE_TOO_LONG Maximum_1024_bytes" : "ERR INCOMPLETE_MESSAGE Expected_newline");
+                break;
             }
+            // Если дошли сюда, с командой все хорошо, можно выполнять
             std::string reply = handleCommand(request, generator, history, quit);
             if (!sendLine(clientSocket, reply)) {
                 std::cerr << "send failed\n";
                 break;
             }
         }
-        // 4. Закрываем клиентский сокет и возвращаемся к accept.
-        shutdown(clientSocket, SHUT_WR);
+        // Закрываем клиентский сокет и возвращаемся к accept.
+        shutdown(clientSocket, SHUT_WR); // Сначала shutdown, чтобы перестать принимать новые запросы, но дообработать еще незаверщенные
         close(clientSocket);
         std::cout << "Client disconnected\n";
     }
     close(serverSocket);
-    return 1; // Сюда попадаем при ошибке accept.
+    return 1; // Сюда попадаем при ошибке accept
 }

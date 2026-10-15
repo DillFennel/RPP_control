@@ -1,21 +1,29 @@
-# Простой TCP-пример для Windows
+# Вариант 5 — Windows
 
-Два исходника, как в презентации: [server/server.cpp](server/server.cpp) и [client/client.cpp](client/client.cpp). В каждом файле есть main и две короткие функции отправки/чтения строк. В сервере дополнительно есть handleCommand для логики задачи.
+Исходники: [SERVER/server.cpp](SERVER/server.cpp), [CLIENT/client.cpp](CLIENT/client.cpp). Для каждого есть отдельная программа с main. Протокол совместим с macOS-версией.
 
-Протокол описан в [протокол.md](протокол.md). Команды: GET, SET, ADD, RESET, QUIT.
+## Сборка и запуск
 
-## Сборка
-
-Все команды выполнять из этой папки.
-
-Нужны MSVC и Windows SDK, например из Visual Studio с компонентами разработки на C++. Открыть Developer PowerShell / Developer Command Prompt:
+Все команды выполнять из папки windows. Нужны MSVC и Windows SDK, например из Visual Studio с компонентами разработки на C++. Открыть Developer PowerShell / Developer Command Prompt:
 
 ```powershell
-cl /nologo /std:c++17 /EHsc /W4 /utf-8 server\server.cpp /Feserver.exe /Foserver.obj /link ws2_32.lib
-cl /nologo /std:c++17 /EHsc /W4 /utf-8 client\client.cpp /Feclient.exe /Foclient.obj /link ws2_32.lib
+cl /nologo /std:c++17 /EHsc /W4 /utf-8 SERVER\server.cpp /Feserver.exe /Foserver.obj /link ws2_32.lib
+cl /nologo /std:c++17 /EHsc /W4 /utf-8 CLIENT\client.cpp /Feclient.exe /Foclient.obj /link ws2_32.lib
 ```
 
-В одном терминале запустить `.\server.exe`, во втором — `.\client.exe`.
+В первом терминале:
+
+```powershell
+.\server.exe
+```
+
+Во втором терминале из той же папки:
+
+```powershell
+.\client.exe
+```
+
+Конец консольного ввода (Ctrl+Z и Enter) также отправляет /quit.
 
 При наличии CMake:
 
@@ -24,50 +32,50 @@ cmake -S . -B build-cmake
 cmake --build build-cmake --config Debug
 ```
 
-Для генератора Visual Studio программы находятся в build-cmake\\Debug, для Ninja обычно в build-cmake.
+Для генератора Visual Studio исполняемые файлы находятся в build-cmake\Debug; для Ninja — обычно в build-cmake.
 
-## Проверочная сессия
+## Команды для примера
+
+После запуска клиента можно вводить:
 
 ```text
-GET
-SET 10
-ADD 5
-ADD abc
-GET
-RESET
-QUIT
+/history
+/seed 42
+/generate DIGITS 10
+/generate LETTERS 8
+/generate ALNUM 12
+/generate PUNCT 6
+/check DIGITS 12345
+/check DIGITS 12a45
+/history
+/generate DIGITS 0
+/generate UNKNOWN 4
+/seed -1
+/quit
 ```
 
-Ожидается: 0, 10, 15, ошибка BAD_NUMBER, 15, 0, завершение сессии. При повторном подключении GET снова возвращает 0.
+Начальная история пуста. /generate выводит строку, /check — соответствие типу. Последние три ошибочные команды возвращают BAD_LENGTH, BAD_TYPE, BAD_SEED, после чего клиент продолжает работу. Конкретные случайные строки зависят от состояния генератора.
 
-Клиент по умолчанию подключается к 127.0.0.1:12345. Можно передать IPv4-адрес другого компьютера первым аргументом. Сервер привязан к INADDR_ANY:12345; для обмена между компьютерами порт должен быть доступен через сеть.
+Для воспроизведения результата установить тот же seed и повторить те же команды /generate. /seed не очищает историю. После нового подключения генератор снова начинается с seed 5489, история пуста.
 
-QUIT закрывает клиентскую сессию. Конец консольного ввода (Ctrl+Z и Enter) тоже отправляет QUIT. Сервер останавливается обычным Ctrl+C, после чего ОС освобождает ресурсы процесса.
+## Подключение и ограничения
 
-## Что понимать
+Клиент по умолчанию использует 127.0.0.1:12345. Первым аргументом запуска можно передать IPv4-адрес другого компьютера. Сервер использует INADDR_ANY:12345; при работе по сети этот порт должен быть доступен.
 
-- Сокеты создаются и закрываются явно.
-- На сервере порядок socket → bind → listen → accept.
-- На клиенте порядок socket → connect.
-- receiveLine читает по одному байту до LF; recv может блокироваться.
-- sendLine досылает всю строку, если send принял только часть.
-- В сервере handleCommand проверяет аргументы и изменяет value.
-- Клиент различает OK VALUE, OK BYE и ERR.
-- Сервер обрабатывает одного клиента за раз; таймаутов ожидания нет.
-- Формат чисел допускает плюс и минус. Неверный формат и выход за диапазон дают BAD_NUMBER.
+Команды: /generate, /seed, /check, /history, /quit. Типы: DIGITS, LETTERS, ALNUM, PUNCT. Длина — 1–128, seed — 0–4294967295, числовые аргументы без знака. Буквы латинские, обоих регистров. Подробности в [протокол.md](протокол.md), разбор кода в [ПОЯСНЕНИЯ.md](ПОЯСНЕНИЯ.md).
 
-Чтение по одному байту выбрано ради понятности на защите. Для больших потоков данных следует читать блоками; для этих коротких команд это учебный компромисс.
+Сервер работает с одним клиентом за раз. Сетевые вызовы блокирующие, таймаутов нет. /quit завершает сессию клиента; сервер останавливается Ctrl+C. Для сети используются только системные сокеты, остальные инструменты — стандартная библиотека C++17.
 
 ## Упаковка
 
 Из этой папки:
 
 ```powershell
-Compress-Archive -Path .\протокол.md,.\README.md,.\CMakeLists.txt,.\server,.\client -DestinationPath .\submission.zip -Force
+Compress-Archive -Path .\протокол.md,.\README.md,.\ПОЯСНЕНИЯ.md,.\CMakeLists.txt,.\SERVER,.\CLIENT -DestinationPath .\submission.zip -Force
 ```
 
-В архиве протокол, server и client окажутся в корне. Бинарные файлы и папка сборки не нужны.
+Протокол и папки SERVER/CLIENT должны находиться прямо в корне архива. Результаты сборки не включать.
 
-## Проверки
+## Статус сборки
 
-Актуальная Winsock-версия в этой среде не собиралась и не запускалась: нужна проверка на Windows.
+Эта версия не собиралась и не запускалась. Перед сдачей нужна сборка и запуск на Windows по инструкции выше.

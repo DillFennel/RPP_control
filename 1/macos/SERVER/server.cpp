@@ -1,13 +1,16 @@
-#include <sys/socket.h>
+#include <sys/socket.h> 
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <csignal>
+
 #include <cerrno>
 #include <iostream>
 #include <sstream>
+
 #include <string>
-#include <climits>
+#include <random>
+#include <vector>
 
 // TCP передаёт поток байтов. Разделяем сообщения символом '\n'.
 enum ReadResult { LINE_OK, CLOSED, IO_ERROR, TOO_LONG, INCOMPLETE };
@@ -48,58 +51,96 @@ bool sendLine(int sock, const std::string& line) {
     return true;
 }
 
-// Здесь меняется логика под индивидуальный вариант.
-// value принадлежит одному соединению; quit завершает только эту сессию.
-std::string handleCommand(const std::string& line, long long& value, bool& quit) {
+// Разрешены только десятичные цифры; переполнение обнаружит поток ввода.
+bool parseUnsigned(const std::string& text, unsigned long long& number) {
+    if (text.empty()) return false;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+    }
+    std::istringstream input(text);
+    return static_cast<bool>(input >> number);
+}
+
+std::string alphabetForType(const std::string& type) {
+    if (type == "DIGITS") return "0123456789";
+    if (type == "LETTERS") return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    if (type == "ALNUM") return "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    // \" обозначает кавычку, \\ обозначает одну обратную косую черту.
+    if (type == "PUNCT") return "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    return ""; // Неизвестный тип.
+}
+
+// Генератор и история принадлежат одному соединению и передаются по ссылке.
+std::string handleCommand(const std::string& line, std::mt19937& generator,
+                         std::vector<std::string>& history, bool& quit) {
     for (unsigned char c : line) {
         if (c != '\t' && (c < 32 || c > 126))
-            return "ERR BAD_TEXT Use_printable_ASCII_or_tab";
+            return "ERR BAD_FORMAT Use_printable_ASCII_or_tab";
     }
     std::istringstream input(line);
-    std::string command, argument, extra;
-    if (!(input >> command)) return "ERR EMPTY_COMMAND Command_is_empty";
+    std::string command, type, argument, extra;
+    if (!(input >> command)) return "ERR BAD_FORMAT Command_is_empty";
 
-    if (command == "GET" || command == "RESET" || command == "QUIT") {
-        if (input >> extra) return "ERR BAD_ARGUMENTS Expected_no_arguments";
-        if (command == "QUIT") {
+    if (command == "/quit" || command == "/history") {
+        if (input >> extra) return "ERR BAD_FORMAT Expected_no_arguments";
+        if (command == "/quit") {
             quit = true;
             return "OK BYE";
         }
-        if (command == "RESET") value = 0;
-        return "OK VALUE " + std::to_string(value);
+        std::string reply = "OK HISTORY " + std::to_string(history.size());
+        for (const std::string& value : history) reply += " " + value;
+        return reply;
     }
-    if (command != "SET" && command != "ADD")
-        return "ERR UNKNOWN_COMMAND Use_GET_SET_ADD_RESET_QUIT";
-    if (!(input >> argument) || (input >> extra))
-        return "ERR BAD_ARGUMENTS Expected_one_integer";
 
-    long long number;
-    std::istringstream numberInput(argument);
-    if (!(numberInput >> number) || (numberInput >> extra))
-        return "ERR BAD_NUMBER Expected_integer_in_int64_range";
-
-    if (command == "SET") {
-        value = number;
-    } else {
-        // Проверяем ДО сложения, чтобы не допустить переполнения.
-        if ((number > 0 && value > LLONG_MAX - number) ||
-            (number < 0 && value < LLONG_MIN - number))
-            return "ERR OVERFLOW Result_does_not_fit_int64";
-        value += number;
+    if (command == "/seed") {
+        if (!(input >> argument) || (input >> extra))
+            return "ERR BAD_FORMAT Expected_one_seed";
+        unsigned long long seed;
+        if (!parseUnsigned(argument, seed) || seed > 4294967295ULL)
+            return "ERR BAD_SEED Expected_0_to_4294967295";
+        generator.seed(static_cast<std::mt19937::result_type>(seed));
+        return "OK SEED " + std::to_string(seed);
     }
-    return "OK VALUE " + std::to_string(value);
+
+    if (command != "/generate" && command != "/check")
+        return "ERR UNKNOWN_COMMAND Use_generate_seed_check_history_quit";
+    if (!(input >> type >> argument) || (input >> extra))
+        return "ERR BAD_FORMAT Expected_type_and_argument";
+    const std::string alphabet = alphabetForType(type);
+    if (alphabet.empty()) return "ERR BAD_TYPE Use_DIGITS_LETTERS_ALNUM_PUNCT";
+
+    if (command == "/check") {
+        if (argument.size() > 128) return "ERR BAD_LENGTH Expected_1_to_128";
+        for (char c : argument) {
+            if (alphabet.find(c) == std::string::npos) return "OK CHECK NO";
+        }
+        return "OK CHECK YES";
+    }
+
+    unsigned long long length;
+    if (!parseUnsigned(argument, length) || length == 0 || length > 128)
+        return "ERR BAD_LENGTH Expected_1_to_128";
+    // Для каждого символа выбираем случайный индекс в алфавите.
+    std::uniform_int_distribution<int> pick(0, static_cast<int>(alphabet.size()) - 1);
+    std::string value;
+    for (unsigned long long i = 0; i < length; ++i) {
+        value += alphabet[static_cast<std::size_t>(pick(generator))];
+    }
+    history.push_back(value);
+    if (history.size() > 5) history.erase(history.begin());
+    return "OK STRING " + value;
 }
 
 int main() {
     // Запись в закрытое соединение должна дать ошибку send, а не убить сервер.
     std::signal(SIGPIPE, SIG_IGN);
-    // 1. Создаём TCP-сокет, как в примере из презентации.
+    // Создаем TCP-сокет
     int serverSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (serverSocket < 0) {
         std::cerr << "socket failed\n";
         return 1;
     }
-    // Позволяет быстрее перезапускать сервер на том же порту.
+    // Без этого порт какое-то время будет в таймауте после отсановке сервера. Так можно сразу переиспользовать
     const int reuse = 1;
     if (setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
         std::cerr << "setsockopt failed\n";
@@ -107,11 +148,12 @@ int main() {
         return 1;
     }
 
-    // 2. Заполняем локальный адрес, затем привязываем его к сокету.
+    // Заполняем адрес
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons(12345);
+    // Привязываем сокет к адресу
     if (bind(serverSocket, (const sockaddr*)&address, sizeof(address)) < 0) {
         std::cerr << "bind failed: port 12345 may be busy\n";
         close(serverSocket);
@@ -125,7 +167,7 @@ int main() {
     std::cout << "Server on port 12345. Ctrl+C to stop.\n";
 
     // 3. По очереди принимаем клиентов.
-    for (;;) {
+    while (true) {
         int clientSocket = accept(serverSocket, nullptr, nullptr);
         if (clientSocket < 0) {
             if (errno == EINTR) continue;
@@ -133,7 +175,8 @@ int main() {
             break;
         }
         std::cout << "Client connected\n";
-        long long value = 0; // Новое соединение начинает с нуля.
+        std::mt19937 generator(5489u); // Генератор этой сессии.
+        std::vector<std::string> history; // Не больше пяти результатов.
         bool quit = false;
         while (!quit) {
             std::string request;
@@ -149,7 +192,7 @@ int main() {
                     : "ERR INCOMPLETE_MESSAGE Expected_newline");
                 break; // Ошибка framing завершает эту сессию.
             }
-            std::string reply = handleCommand(request, value, quit);
+            std::string reply = handleCommand(request, generator, history, quit);
             if (!sendLine(clientSocket, reply)) {
                 std::cerr << "send failed\n";
                 break;

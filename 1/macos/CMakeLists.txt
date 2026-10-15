@@ -2,11 +2,11 @@ cmake_minimum_required(VERSION 3.16)
 project(SocketPracticeMac LANGUAGES CXX)
 
 if(NOT APPLE)
-    message(FATAL_ERROR "This template targets macOS and uses SO_NOSIGPIPE.")
+    message(FATAL_ERROR "Build this macOS example on macOS.")
 endif()
 
-add_executable(server server/main.cpp)
-add_executable(client client/main.cpp)
+add_executable(server server/server.cpp)
+add_executable(client client/client.cpp)
 
 foreach(target server client)
     target_compile_features(${target} PRIVATE cxx_std_17)

@@ -5,8 +5,8 @@ if(NOT WIN32)
     message(FATAL_ERROR "This template uses Windows Winsock. Build it on Windows.")
 endif()
 
-add_executable(server server/main.cpp)
-add_executable(client client/main.cpp)
+add_executable(server server/server.cpp)
+add_executable(client client/client.cpp)
 
 foreach(target server client)
     target_compile_features(${target} PRIVATE cxx_std_17)
